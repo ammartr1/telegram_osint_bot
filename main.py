@@ -1,119 +1,124 @@
-# main.py
-# BLACK OPEN SYSTEM - TELEGRAM OSINT BOT
-
+import os
+import asyncio
 import logging
-import json
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from config import BOT_TOKEN, OWNER_USER_ID
-import scrapers
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from scrapers import OSINTEngine
+from groq import Groq
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID"))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# التحقق من الصلاحية
-async def check_owner(update: Update):
-    if update.effective_user.id != OWNER_USER_ID:
-        await update.message.reply_text("🔒 هذا البوت خاص بالمالك فقط.")
-        return False
-    return True
+# AI client
+ai_client = Groq(api_key=GROQ_API_KEY)
 
-# قائمة الأزرار الرئيسية
+# Whitelist check
+def is_owner(update: Update):
+    return update.effective_user.id == OWNER_ID
+
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update):
+    if not is_owner(update):
+        await update.message.reply_text("⛔ Unauthorized. This bot is private.")
         return
     keyboard = [
-        [InlineKeyboardButton("📱 وسائل التواصل", callback_data='social')],
-        [InlineKeyboardButton("📞 هوية رقمية", callback_data='identity')],
-        [InlineKeyboardButton("🌐 تقني وجيو", callback_data='technical')],
-        [InlineKeyboardButton("🧠 تحليل AI شامل", callback_data='ai_analysis')],
-        [InlineKeyboardButton("❓ تعليمات", callback_data='help')]
+        [InlineKeyboardButton("🔍 Instagram", callback_data="ig"),
+         InlineKeyboardButton("📞 Phone", callback_data="phone")],
+        [InlineKeyboardButton("📧 Email", callback_data="email"),
+         InlineKeyboardButton("👤 Username", callback_data="username")],
+        [InlineKeyboardButton("🌐 IP", callback_data="ip"),
+         InlineKeyboardButton("🖼️ Photo EXIF", callback_data="photo")],
+        [InlineKeyboardButton("🧠 AI Analysis", callback_data="ai"),
+         InlineKeyboardButton("🔎 Reverse Image", callback_data="reverse")]
     ]
-    await update.message.reply_text(
-        "🔥 *بوت OSINT العملاق - BLACK OPEN SYSTEM* 🔥\n\nاختر خدمة:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("🕵️‍♂️ OSINT Master Bot Ready\nSelect target:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# Callback handler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        await update.callback_query.answer("Unauthorized", show_alert=True)
+        return
     query = update.callback_query
     await query.answer()
-    if update.effective_user.id != OWNER_USER_ID:
-        await query.edit_message_text("🔒 غير مصرح.")
-        return
     data = query.data
-    if data == 'social':
-        await query.edit_message_text("📱 أرسل:\n`instagram:username`\n`tiktok:username`", parse_mode='Markdown')
-        context.user_data['mode'] = 'social'
-    elif data == 'identity':
-        await query.edit_message_text("🔢 أرسل:\n`phone:+1234567890`\n`email:example@mail.com`\n`username:target`", parse_mode='Markdown')
-        context.user_data['mode'] = 'identity'
-    elif data == 'technical':
-        await query.edit_message_text("🌍 أرسل:\n`ip:8.8.8.8`\nأو أرسل صورة لتحليل EXIF", parse_mode='Markdown')
-        context.user_data['mode'] = 'technical'
-    elif data == 'ai_analysis':
-        context.user_data['mode'] = 'ai_analysis'
-        await query.edit_message_text("🧠 أرسل البيانات كـ JSON، أو اكتب `collect` لجمع بيانات تجريبية")
-    elif data == 'help':
-        await query.edit_message_text("استخدم الأزرار للتنقل. كل خدمة تطلب مدخلات محددة.")
+    context.user_data["last_action"] = data
+    await query.edit_message_text(f"📝 Send {data.upper()} target:")
+    context.user_data["awaiting"] = data
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update):
+# Message handler
+async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
         return
-    text = update.message.text
-    mode = context.user_data.get('mode', 'social')
+    if "awaiting" not in context.user_data:
+        return
+    action = context.user_data["awaiting"]
+    target = update.message.text.strip()
+    await update.message.reply_text(f"⏳ Processing {action}...")
+    
     result = {}
+    if action == "ig":
+        result = await OSINTEngine.instagram_scrape(target)
+    elif action == "phone":
+        result = await OSINTEngine.phone_lookup(target)
+    elif action == "email":
+        result = await OSINTEngine.email_breach_check(target)
+    elif action == "username":
+        result = await OSINTEngine.username_search(target)
+    elif action == "ip":
+        result = await OSINTEngine.ip_geo(target)
+    elif action == "photo":
+        if update.message.photo:
+            file = await update.message.photo[-1].get_file()
+            photo_bytes = await file.download_as_bytearray()
+            result = await OSINTEngine.photo_exif(photo_bytes)
+        else:
+            result = {"error": "send photo"}
+    elif action == "reverse":
+        if update.message.photo:
+            # process reverse image
+            result = await OSINTEngine.reverse_image_search("photo")
+        else:
+            result = {"error": "send photo"}
+    
+    output = f"📊 {action.upper()} Results:\n" + "\n".join([f"{k}: {v}" for k, v in result.items()])
+    await update.message.reply_text(output[:4000])
+    del context.user_data["awaiting"]
+    
+    # Store for AI analysis
+    if "history" not in context.user_data:
+        context.user_data["history"] = []
+    context.user_data["history"].append({action: result})
 
-    if mode == 'social':
-        if text.startswith('instagram:'):
-            result = await scrapers.fetch_instagram_data(text.split(':')[1])
-        elif text.startswith('tiktok:'):
-            result = await scrapers.fetch_tiktok_data(text.split(':')[1])
-        else:
-            result = {"error": "استخدم instagram:username أو tiktok:username"}
-    elif mode == 'identity':
-        if text.startswith('phone:'):
-            result = scrapers.phone_lookup(text.split(':')[1])
-        elif text.startswith('email:'):
-            result = scrapers.email_breach_check(text.split(':')[1])
-        elif text.startswith('username:'):
-            result = await scrapers.username_osint(text.split(':')[1])
-        else:
-            result = {"error": "استخدم phone:رقم أو email:بريد أو username:اسم"}
-    elif mode == 'technical':
-        if text.startswith('ip:'):
-            ip = text.split(':')[1]
-            geo = scrapers.ip_geo_lookup(ip)
-            vpn = scrapers.check_vpn_proxy(ip)
-            result = {"geo": geo, "vpn_proxy": vpn}
-        else:
-            result = {"error": "استخدم ip:address"}
-    elif mode == 'ai_analysis' and text == 'collect':
-        fake_data = {"username": "target", "ip": "1.1.1.1", "email": "target@example.com"}
-        result = await scrapers.ai_analysis(fake_data)
-        await update.message.reply_text(f"🧠 *تقرير AI:*\n\n{result}", parse_mode='Markdown')
+# AI Analysis
+async def ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
         return
-    else:
-        result = {"error": "اختر خدمة من القائمة أولاً"}
-
-    await update.message.reply_text(json.dumps(result, indent=2, ensure_ascii=False))
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update):
+    history = context.user_data.get("history", [])
+    if not history:
+        await update.message.reply_text("No data collected yet. Run some OSINT first.")
         return
-    photo = await update.message.photo[-1].get_file()
-    img_bytes = await photo.download_as_bytearray()
-    exif = scrapers.image_exif_extraction(img_bytes)
-    await update.message.reply_text(f"📸 *EXIF:*\n{json.dumps(exif, indent=2, ensure_ascii=False)}", parse_mode='Markdown')
+    prompt = f"You are a forensic digital analyst. Analyze this OSINT data and create a intelligence report:\n{str(history)}"
+    completion = ai_client.chat.completions.create(
+        model="llama3-70b-8192",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+    report = completion.choices[0].message.content
+    await update.message.reply_text(f"🧠 AI REPORT:\n{report[:4000]}")
 
+# Main
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    logger.info("البوت يعمل...")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_input))
+    app.add_handler(CommandHandler("analyze", ai_analysis))
+    print("Bot running...")
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

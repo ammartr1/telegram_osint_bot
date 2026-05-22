@@ -3,7 +3,8 @@ services:
     name: telegram-osint-bot
     runtime: python
     buildCommand: |
-      apt-get update && apt-get install -y libjpeg-dev zlib1g-dev
+      apt-get update
+      apt-get install -y gcc python3-dev libjpeg-dev zlib1g
       pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: python main.py
@@ -15,4 +16,3 @@ services:
       - key: GROQ_API_KEY
         sync: false
     plan: free
-    autoDeploy: true
